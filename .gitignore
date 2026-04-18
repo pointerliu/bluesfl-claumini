@@ -1,0 +1,5 @@
+/target
+/sv-analyzer
+/res.json
+*.log
+.env
