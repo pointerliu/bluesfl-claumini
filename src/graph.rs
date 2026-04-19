@@ -107,9 +107,7 @@ impl SliceGraph {
         let time = override_time
             .or(self.raw.start_time.map(|t| t.0))
             .ok_or_else(|| {
-                anyhow!(
-                    "slice JSON has no start_time and no --start-time override was provided"
-                )
+                anyhow!("slice JSON has no start_time and no --start-time override was provided")
             })?;
         let ts = Timestamp(time);
 
@@ -123,11 +121,8 @@ impl SliceGraph {
             .iter()
             .copied()
             .filter(|&idx| {
-                self.outgoing_edges(idx).any(|e| {
-                    e.signal
-                        .as_ref()
-                        .is_some_and(|s| s.name == target)
-                })
+                self.outgoing_edges(idx)
+                    .any(|e| e.signal.as_ref().is_some_and(|s| s.name == target))
             })
             .collect();
         if !driving_target.is_empty() {
@@ -158,10 +153,10 @@ impl SliceGraph {
         let mut seen: HashMap<String, ()> = HashMap::new();
         let mut names = Vec::new();
         for edge in self.incoming_edges(node_idx) {
-            if let Some(sig) = &edge.signal {
-                if seen.insert(sig.name.clone(), ()).is_none() {
-                    names.push(sig.name.clone());
-                }
+            if let Some(sig) = &edge.signal
+                && seen.insert(sig.name.clone(), ()).is_none()
+            {
+                names.push(sig.name.clone());
             }
         }
         names
@@ -170,11 +165,7 @@ impl SliceGraph {
     /// Returns the predecessor node(s) whose outgoing edge to `node_idx` carries `signal_name`.
     pub fn predecessors_for_signal(&self, node_idx: usize, signal_name: &str) -> Vec<usize> {
         self.incoming_edges(node_idx)
-            .filter(|e| {
-                e.signal
-                    .as_ref()
-                    .is_some_and(|s| s.name == signal_name)
-            })
+            .filter(|e| e.signal.as_ref().is_some_and(|s| s.name == signal_name))
             .map(|e| e.from)
             .collect()
     }

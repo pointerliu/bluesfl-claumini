@@ -1,5 +1,6 @@
 /target
 /sv-analyzer
 /res.json
+/.codex
 *.log
 .env

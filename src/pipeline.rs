@@ -10,7 +10,7 @@ use sva_core::types::BlockJson;
 use sva_core::wave::WellenReader;
 
 use crate::agent::{NodeDecision, NodeDecisionInput, build_agent, decide, render_prompt};
-use crate::config::{Cli, provider_config_from_env};
+use crate::config::{Cli, build_provider_from_env};
 use crate::graph::SliceGraph;
 use crate::tools::ReadSignalValueTool;
 
@@ -74,7 +74,11 @@ fn log_turn(step: usize, node_idx: usize, turn: &TurnRecord) {
         .map(|t| {
             let first_line = t.lines().next().unwrap_or("");
             if t.len() > 400 {
-                format!("{}... ({} bytes)", &first_line.chars().take(200).collect::<String>(), t.len())
+                format!(
+                    "{}... ({} bytes)",
+                    &first_line.chars().take(200).collect::<String>(),
+                    t.len()
+                )
             } else {
                 t.to_string()
             }
@@ -82,7 +86,11 @@ fn log_turn(step: usize, node_idx: usize, turn: &TurnRecord) {
         .or_else(|| {
             turn.json.as_ref().map(|v| {
                 let s = serde_json::to_string(v).unwrap_or_default();
-                if s.len() > 400 { format!("{}...", &s[..400]) } else { s }
+                if s.len() > 400 {
+                    format!("{}...", &s[..400])
+                } else {
+                    s
+                }
             })
         })
         .unwrap_or_default();
@@ -154,22 +162,14 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
         WellenReader::open(&cli.waveform)
             .with_context(|| format!("failed to open waveform {}", cli.waveform.display()))?,
     );
-    let bug_report = fs::read_to_string(&cli.bug_report).with_context(|| {
-        format!("failed to read bug report {}", cli.bug_report.display())
-    })?;
+    let bug_report = fs::read_to_string(&cli.bug_report)
+        .with_context(|| format!("failed to read bug report {}", cli.bug_report.display()))?;
 
     // ---- provider ----
-    let config = provider_config_from_env();
-    let provider: Arc<dyn claumini_core::ModelProvider> = Arc::new(
-        claumini_models::OpenAiCompatibleProvider::new(config)
-            .map_err(|e| anyhow!("failed to build provider: {e}"))?,
-    );
+    let provider = build_provider_from_env(cli.provider)?;
 
     // ---- resolve start node ----
-    let start_node = graph.resolve_start(
-        cli.start_signal.as_deref(),
-        cli.start_time,
-    )?;
+    let start_node = graph.resolve_start(cli.start_signal.as_deref(), cli.start_time)?;
 
     let target_signal = cli
         .start_signal
@@ -304,25 +304,21 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
             source = %block.source_file,
             "querying LLM for node decision"
         );
-            tracing::info!(
-                step,
-                node_idx,
-                role = "user",
-                "LLM prompt:\n{}",
-                prompt_text
-            );
+        tracing::info!(
+            step,
+            node_idx,
+            role = "user",
+            "LLM prompt:\n{}",
+            prompt_text
+        );
 
         let session = decide(&agent, input, session_id)
             .await
             .map_err(|e| anyhow!("agent failed at step {step}: {e}"))?;
         let decision = session.output.clone();
 
-        let transcript: Vec<TurnRecord> = session
-            .session
-            .transcript
-            .iter()
-            .map(record_turn)
-            .collect();
+        let transcript: Vec<TurnRecord> =
+            session.session.transcript.iter().map(record_turn).collect();
         for turn in &transcript {
             log_turn(step, node_idx, turn);
         }

@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-claumini-core = { path = "../../claumini/claumini-core" }
-claumini-runtime = { path = "../../claumini/claumini-runtime" }
-claumini-models = { path = "../../claumini/claumini-models" }
-claumini-tools = { path = "../../claumini/claumini-tools" }
-sva_core = { path = "../../../../dac26/sv-analyzer/crates/sva-core" }
+claumini-core = { git = "https://github.com/pointerliu/claumini" }
+claumini-runtime = { git = "https://github.com/pointerliu/claumini" }
+claumini-models = { git = "https://github.com/pointerliu/claumini" }
+claumini-tools = { git = "https://github.com/pointerliu/claumini" }
+sva_core = { git = "https://github.com/pointerliu/sv-analyzer", package = "sva_core" }
 anyhow = "1.0"
 async-trait = "0.1.89"
 clap = { version = "4.5", features = ["derive"] }

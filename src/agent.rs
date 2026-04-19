@@ -169,10 +169,12 @@ pub fn build_agent(
         .with_load_skill(false)
         .with_subagents(false);
 
-    let mut limits = RuntimeLimits::default();
-    limits.model_request_timeout_ms = 300_000;
-    limits.max_turns_per_session = 6;
-    limits.max_turns_policy = MaxTurnsPolicy::ForceFinal { nudge: None };
+    let limits = RuntimeLimits {
+        model_request_timeout_ms: 300_000,
+        max_turns_per_session: 6,
+        max_turns_policy: MaxTurnsPolicy::ForceFinal { nudge: None },
+        ..Default::default()
+    };
 
     PromptAgentBuilder::new(provider)
         .system_prompt(SYSTEM_PROMPT)
