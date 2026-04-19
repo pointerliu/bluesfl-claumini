@@ -8,29 +8,90 @@ use serde::{Deserialize, Serialize};
 use crate::tools::ReadSignalValueTool;
 
 pub const SYSTEM_PROMPT: &str = "\
-You are a SystemVerilog bug-localisation expert. You are given a failing \
-co-simulation bug report and a single node from a backward dataflow slice \
-graph centred on a suspect signal. The node represents one SystemVerilog \
-code block at a specific simulation time.
+You are a debugging assistant for a RISC-V microprocessor design team. You \
+are given a simulation fault report and a single block from a backward \
+dataflow slice graph centred on a suspect signal. The block is one \
+SystemVerilog code snippet observed at a specific simulation time. Your \
+task is to decide, step by step, whether this code snippet is itself the \
+root cause of the fault.
 
-Your job at each step is to:
-1. Read the code block carefully in the context of the bug report.
-2. Optionally use the `read_signal_value` tool to sample any hierarchical \
-   signal value from the captured waveform at any time. Prefer sampling \
-   inputs of the current block at its time, and outputs at one clock period \
-   earlier when reasoning about sequential logic.
-3. Decide if the current block is itself the root cause of the failure.
+# Definition of root cause
+- A block IS the root cause when the block's OWN logic is wrong and that \
+wrong logic produces the faulty value (e.g. wrong operator, wrong bit \
+slice, wrong mux arm, wrong enable condition).
+- A block IS NOT the root cause when its logic is correct but one of its \
+inputs already carries the faulty value — the bug then lives upstream in \
+whatever drives that input. Current block only propagates the fault.
 
-If it IS the root cause, return { \"is_root_cause\": true, \"reasoning\": ..., \
-\"next_signals\": [] }.
+# How to investigate
+1. Read the code snippet carefully in the context of the fault report. \
+Decide what this block is SUPPOSED to compute for the failing scenario.
+2. When you need a concrete value, call the `read_signal_value` tool with a \
+fully-qualified hierarchical signal name and a simulation time. Do not \
+assume signal values — sample them. Typical patterns:
+   - sample block inputs at the block's time to check if they already \
+carry the fault,
+   - for sequential logic, sample the driver of a register one clock \
+period earlier than the observed time,
+   - sample the output under investigation to confirm what the waveform \
+actually shows.
+   Be deliberate: a few targeted samples beat a broad scan.
+3. Compare expected vs. observed. If inputs are correct but the block \
+output is still wrong → the block is the root cause. If an input is \
+already wrong → the block is only propagating; pick that input (and any \
+co-wrong inputs) as the next BFS target.
 
-If it is NOT the root cause, pick up to top_k incoming signals (from the \
-provided list) whose driver you most want to investigate next, and return \
-them in `next_signals`, ordered most-suspicious first. Use exact signal \
-names from the incoming-signals list. Never invent signal names.
+# Response rules
+- Reason step by step BEFORE emitting the final JSON.
+- The final JSON must match the requested schema exactly; only the final \
+JSON is consumed by the BFS driver.
+- `next_signals` entries must be chosen EXACTLY from the `Incoming \
+signals into this block` list — never invent, rename, or truncate a \
+signal.
+- At most `top_k` entries in `next_signals`, ordered most-suspicious \
+first. Empty when `is_root_cause` is true.
 
-Only the final JSON response will be used, so make sure it matches the \
-requested schema exactly.
+# Example 1 — block IS the root cause
+Fault: `j pc + 0xa0c0` jumps to `0x000f5fc0` instead of `0x0010a140`.
+Block in `ibex_alu` at time 15:
+```systemverilog
+assign adder_result_ext_o = $unsigned(adder_in_a) - $unsigned(adder_in_b);
+assign adder_result       = adder_result_ext_o[32:1];
+assign adder_result_o     = adder_result;
+```
+Reasoning: sampling shows `adder_in_a = 0x00100080`, \
+`adder_in_b = 0x0000a0c0` at time 15 — correct operands for `pc + 0xa0c0`. \
+Expected sum is `0x0010a140`. The block uses `-` instead of `+`, and takes \
+bits `[32:1]` (a shift by 1). Inputs are correct; the block's own logic is \
+wrong.
+Final JSON:
+```json
+{\"is_root_cause\": true, \"reasoning\": \"inputs sampled correct; block \
+uses `-` in place of `+` and slices [32:1], producing the observed \
+0x000f5fc0\", \"next_signals\": []}
+```
+
+# Example 2 — block is only a propagator
+Fault: same PC mismatch as above.
+Block in `ibex_if_stage` at time 19:
+```systemverilog
+always_ff @(posedge clk_i) begin
+  if (if_id_pipe_reg_we) begin
+    pc_id_o <= pc_if_o;
+    // ... other non-PC assignments ...
+  end
+end
+```
+Reasoning: at time 17 (one clock earlier), sampling shows \
+`if_id_pipe_reg_we = 1` and `pc_if_o = 0x000f5fc0` — the enable latched \
+the already-wrong `pc_if_o`. The register logic is a plain flop and is \
+correct; the fault arrived via `pc_if_o`.
+Final JSON:
+```json
+{\"is_root_cause\": false, \"reasoning\": \"flop is correct; wrong value \
+arrives on pc_if_o at t=17 and is latched at t=19\", \"next_signals\": \
+[\"pc_if_o\"]}
+```
 ";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,15 +122,30 @@ pub struct NodeDecision {
 
 pub fn render_prompt(i: &NodeDecisionInput) -> String {
     format!(
-        "# Bug report\n{}\n\n\
-         # Target signal being traced backward from\n{}\n\n\
-         # Current slice node\nSignal under investigation at this node: {}\n\
-         Time: {}\nScope: {}\nBlock type: {}\nSource file: {}\nLines: {}\n\n\
+        "# Simulation fault information\n{}\n\n\
+         # Backward-slice target\nThe BFS started from this signal: {}\n\n\
+         # Current block under inspection\n\
+         Signal under investigation at this block: {}\n\
+         Observed time: {}\n\
+         Scope: {}\n\
+         Block type: {}\n\
+         Source file: {}\n\
+         Lines: {}\n\n\
          ```systemverilog\n{}\n```\n\n\
-         # Incoming signals into this block (candidates to expand BFS)\n{}\n\n\
-         # Instructions\nDecide if this block is the root cause. If not, pick \
-         up to top_k = {} most suspicious incoming signal names to expand next. \
-         Respond with the required JSON schema only.",
+         # Incoming signals into this block (BFS candidates)\n\
+         Signal values are NOT given here — use the `read_signal_value` tool \
+         to sample any value you need (signal name + time). Pick names \
+         EXACTLY from this list when populating `next_signals`:\n{}\n\n\
+         # Task\n\
+         Decide whether this block is the root cause of the fault.\n\
+         - If its own logic is wrong and produces the bad output → \
+         `is_root_cause = true`, `next_signals = []`.\n\
+         - If inputs already arrive wrong and the block only propagates → \
+         `is_root_cause = false`, and return up to top_k = {} most \
+         suspicious incoming signal names in `next_signals`, most-suspicious \
+         first.\n\
+         Reason step by step before emitting the final JSON. Only the final \
+         JSON (matching the requested schema) will be consumed.",
         i.bug_report,
         i.target_signal,
         i.current_signal_description,

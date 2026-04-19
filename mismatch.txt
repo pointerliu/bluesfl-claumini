@@ -1,0 +1,22 @@
+# Ibex co-simulation failure — PC mismatch
+
+Time of failure (co-sim checker flagged) : 22
+Successfully matched instructions before mismatch : 1
+
+PC on the failing commit
+  time                : 19
+  DUT retired PC      : 0x000f5fc0
+  ISS (oracle) PC     : 0x0010a140
+  DUT WE / WADDR / WDATA   : 0 / 0 / 0   (no register writeback)
+  Difference (oracle − DUT): 0x0000a180
+
+Symptom on the waveform
+  At t=19 the DUT's `pc_id_o` holds 0x000f5fc0 (should be 0x0010a140).
+  Because the DUT jumped to a non-code address, at t=19 it illegally
+  fetched 0x00010413 at PC 0x000f5fc0 and raised an illegal-instruction
+  exception.
+
+Expected behaviour
+  The jump that drives this commit should have landed at 0x0010a140;
+  `pc_id_o` should hold 0x0010a140 at t=19. The root cause lies in
+  whatever logic computes that next-PC / branch target value.

@@ -192,17 +192,12 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
     let mut visited: HashSet<usize> = HashSet::new();
     let mut trace: Vec<VisitedStep> = Vec::new();
     let mut root_cause: Option<RootCauseReport> = None;
-    let mut step: usize = 0;
+    let mut llm_calls: usize = 0;
 
     while let Some((node_idx, signal_under_investigation)) = queue.pop_front() {
         if !visited.insert(node_idx) {
             continue;
         }
-        if step >= cli.max_iter {
-            tracing::warn!(max_iter = cli.max_iter, "reached max_iter; stopping BFS");
-            break;
-        }
-        step += 1;
 
         let Some(block) = graph.block_of_node(node_idx) else {
             tracing::debug!(node_idx, "skipping non-block node");
@@ -210,6 +205,66 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
         };
 
         let incoming_signals = graph.incoming_signal_names(node_idx);
+
+        // Auto-follow pure port-propagator blocks (ModInput / ModOutput) with
+        // a single incoming signal. Port blocks are syntactic wire renames
+        // across a module boundary — they carry no logic of their own, so
+        // they can never BE the root cause; asking the LLM only wastes a
+        // BFS iteration on a forced pass-through.
+        //
+        // We deliberately do NOT generalise this to every 1-input block: an
+        // Assign / Always with a single fan-in can still be the root cause
+        // when its own logic is wrong (e.g. `x = !y` written in place of
+        // `x = y`, or a wrong bit slice / shift). Those cases need the LLM
+        // to inspect the block body.
+        if is_auto_follow_block(&block.block_type) && incoming_signals.len() == 1 {
+            let upstream = incoming_signals[0].clone();
+            let time = graph.node_time(node_idx);
+            let trace_step = trace.len() + 1;
+            tracing::info!(
+                step = trace_step,
+                node_idx,
+                block_id = block.id.0,
+                block_type = %block.block_type,
+                upstream = %upstream,
+                "auto-follow port block (no LLM call)"
+            );
+            let auto_decision = NodeDecision {
+                is_root_cause: false,
+                reasoning: format!(
+                    "auto-followed {} port block with single upstream signal `{upstream}`; no LLM call",
+                    block.block_type
+                ),
+                next_signals: vec![upstream.clone()],
+            };
+            trace.push(VisitedStep {
+                step: trace_step,
+                node_idx,
+                block_id: block.id.0,
+                source_file: block.source_file.clone(),
+                lines: format!("{}-{}", block.line_start, block.line_end),
+                time: time.map(|t| t.0),
+                scope: block.scope.clone(),
+                signal_under_investigation: signal_under_investigation.clone(),
+                prompt: String::new(),
+                transcript: Vec::new(),
+                decision: auto_decision,
+            });
+            for pred in graph.predecessors_for_signal(node_idx, &upstream) {
+                if !visited.contains(&pred) {
+                    queue.push_back((pred, upstream.clone()));
+                }
+            }
+            continue;
+        }
+
+        if llm_calls >= cli.max_iter {
+            tracing::warn!(max_iter = cli.max_iter, "reached max_iter; stopping BFS");
+            break;
+        }
+        llm_calls += 1;
+        let step = trace.len() + 1;
+
         let incoming_signals_text = if incoming_signals.is_empty() {
             "(none — this block has no incoming data dependencies in the slice)".to_string()
         } else {
@@ -338,6 +393,10 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
     }
 
     Ok(report)
+}
+
+fn is_auto_follow_block(block_type: &str) -> bool {
+    matches!(block_type, "ModInput" | "ModOutput")
 }
 
 fn root_cause_report(node_idx: usize, block: &BlockJson, reasoning: &str) -> RootCauseReport {
