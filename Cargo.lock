@@ -207,7 +207,6 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "claumini-core"
 version = "0.1.0"
-source = "git+https://github.com/pointerliu/claumini#c3bd4fd5cf2c11af3df2cbd6c977b6ec5da153ef"
 dependencies = [
  "async-trait",
  "serde",
@@ -218,7 +217,6 @@ dependencies = [
 [[package]]
 name = "claumini-models"
 version = "0.1.0"
-source = "git+https://github.com/pointerliu/claumini#c3bd4fd5cf2c11af3df2cbd6c977b6ec5da153ef"
 dependencies = [
  "async-trait",
  "claumini-core",
@@ -232,7 +230,6 @@ dependencies = [
 [[package]]
 name = "claumini-runtime"
 version = "0.1.0"
-source = "git+https://github.com/pointerliu/claumini#c3bd4fd5cf2c11af3df2cbd6c977b6ec5da153ef"
 dependencies = [
  "async-trait",
  "claumini-core",
@@ -246,7 +243,6 @@ dependencies = [
 [[package]]
 name = "claumini-tools"
 version = "0.1.0"
-source = "git+https://github.com/pointerliu/claumini#c3bd4fd5cf2c11af3df2cbd6c977b6ec5da153ef"
 dependencies = [
  "async-trait",
  "claumini-core",
@@ -261,7 +257,6 @@ dependencies = [
 [[package]]
 name = "claumini-tools-macros"
 version = "0.1.0"
-source = "git+https://github.com/pointerliu/claumini#c3bd4fd5cf2c11af3df2cbd6c977b6ec5da153ef"
 dependencies = [
  "proc-macro2",
  "quote",

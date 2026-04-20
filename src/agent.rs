@@ -107,6 +107,10 @@ pub struct NodeDecisionInput {
     pub block_time: String,
     pub incoming_signals: String,
     pub top_k: usize,
+    /// Optional corrective feedback from a previous attempt whose
+    /// `next_signals` contained names outside the allowed list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -121,6 +125,13 @@ pub struct NodeDecision {
 }
 
 pub fn render_prompt(i: &NodeDecisionInput) -> String {
+    let feedback_section = match i.feedback.as_deref() {
+        Some(note) => format!(
+            "\n# Correction required (previous attempt invalid)\n{}\n",
+            note
+        ),
+        None => String::new(),
+    };
     format!(
         "# Simulation fault information\n{}\n\n\
          # Backward-slice target\nThe BFS started from this signal: {}\n\n\
@@ -135,7 +146,8 @@ pub fn render_prompt(i: &NodeDecisionInput) -> String {
          # Incoming signals into this block (BFS candidates)\n\
          Signal values are NOT given here — use the `read_signal_value` tool \
          to sample any value you need (signal name + time). Pick names \
-         EXACTLY from this list when populating `next_signals`:\n{}\n\n\
+         EXACTLY from this list when populating `next_signals`:\n{}\n\
+         {}\n\
          # Task\n\
          Decide whether this block is the root cause of the fault.\n\
          - If its own logic is wrong and produces the bad output → \
@@ -156,6 +168,7 @@ pub fn render_prompt(i: &NodeDecisionInput) -> String {
         i.block_line_range,
         i.block_code_snippet,
         i.incoming_signals,
+        feedback_section,
         i.top_k,
     )
 }

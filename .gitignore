@@ -1,6 +1,7 @@
 /target
 /sv-analyzer
 /res.json
+/res_*.json
 /.codex
 /.omx
 *.log

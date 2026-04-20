@@ -24,3 +24,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [[bin]]
 name = "bluesfl"
 path = "src/main.rs"
+
+# Use the local claumini checkout so changes here are picked up without
+# having to push & tag a release on GitHub.
+[patch."https://github.com/pointerliu/claumini"]
+claumini-core = { path = "../../claumini/claumini-core" }
+claumini-runtime = { path = "../../claumini/claumini-runtime" }
+claumini-models = { path = "../../claumini/claumini-models" }
+claumini-tools = { path = "../../claumini/claumini-tools" }

@@ -14,6 +14,10 @@ use crate::config::{Cli, build_provider_from_env};
 use crate::graph::SliceGraph;
 use crate::tools::ReadSignalValueTool;
 
+/// How many times to re-prompt when the model returns signal names that are
+/// not in the block's incoming-signal list. One retry is usually enough.
+const MAX_SIGNAL_VALIDATION_ATTEMPTS: usize = 2;
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ToolCallLog {
     pub id: String,
@@ -28,6 +32,11 @@ pub struct TurnRecord {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Provider-supplied reasoning / chain-of-thought. Captured so the
+    /// dumped transcript contains the full chat history including the
+    /// model's thinking — it is never forwarded to the JSON decoder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json: Option<Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -54,6 +63,7 @@ fn record_turn(msg: &Message) -> TurnRecord {
         .to_string(),
         name: msg.name.clone(),
         text,
+        thinking: msg.thinking.clone(),
         json,
         tool_calls: msg
             .tool_calls
@@ -281,7 +291,7 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
             .map(|t| t.0.to_string())
             .unwrap_or_else(|| "(untimed)".to_string());
 
-        let input = NodeDecisionInput {
+        let mut input = NodeDecisionInput {
             bug_report: bug_report.clone(),
             target_signal: target_signal.clone(),
             current_signal_description: signal_under_investigation.clone(),
@@ -293,43 +303,104 @@ pub async fn run(cli: Cli) -> Result<BluesReport> {
             block_time: block_time.clone(),
             incoming_signals: incoming_signals_text,
             top_k: cli.top_k,
+            feedback: None,
         };
 
-        let session_id = format!("bluesfl-step-{step}-node-{node_idx}");
-        let prompt_text = render_prompt(&input);
-        tracing::info!(
-            step,
-            node_idx,
-            block_id = block.id.0,
-            source = %block.source_file,
-            "querying LLM for node decision"
-        );
-        tracing::info!(
-            step,
-            node_idx,
-            role = "user",
-            "LLM prompt:\n{}",
-            prompt_text
-        );
+        let mut prompt_text;
+        let mut transcript: Vec<TurnRecord>;
+        let mut decision;
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            let session_id = format!("bluesfl-step-{step}-node-{node_idx}-attempt-{attempt}");
+            prompt_text = render_prompt(&input);
+            tracing::info!(
+                step,
+                node_idx,
+                attempt,
+                block_id = block.id.0,
+                source = %block.source_file,
+                "querying LLM for node decision"
+            );
+            tracing::info!(
+                step,
+                node_idx,
+                attempt,
+                role = "user",
+                "LLM prompt:\n{}",
+                prompt_text
+            );
 
-        let session = decide(&agent, input, session_id)
-            .await
-            .map_err(|e| anyhow!("agent failed at step {step}: {e}"))?;
-        let decision = session.output.clone();
+            let session = decide(&agent, input.clone(), session_id)
+                .await
+                .map_err(|e| anyhow!("agent failed at step {step}: {e}"))?;
+            decision = session.output.clone();
 
-        let transcript: Vec<TurnRecord> =
-            session.session.transcript.iter().map(record_turn).collect();
-        for turn in &transcript {
-            log_turn(step, node_idx, turn);
+            transcript = session.session.transcript.iter().map(record_turn).collect();
+            for turn in &transcript {
+                log_turn(step, node_idx, turn);
+            }
+            tracing::info!(
+                step,
+                node_idx,
+                attempt,
+                is_root_cause = decision.is_root_cause,
+                next_signals = ?decision.next_signals,
+                "LLM decision: {}",
+                decision.reasoning
+            );
+
+            if decision.is_root_cause {
+                break;
+            }
+            let invalid: Vec<String> = decision
+                .next_signals
+                .iter()
+                .filter(|s| !incoming_signals.contains(s))
+                .cloned()
+                .collect();
+            if invalid.is_empty() {
+                break;
+            }
+            if attempt >= MAX_SIGNAL_VALIDATION_ATTEMPTS {
+                tracing::warn!(
+                    step,
+                    node_idx,
+                    invalid = ?invalid,
+                    "LLM still returned out-of-list signals after retry; \
+                     dropping invalid entries and continuing"
+                );
+                decision
+                    .next_signals
+                    .retain(|s| incoming_signals.contains(s));
+                break;
+            }
+            tracing::warn!(
+                step,
+                node_idx,
+                attempt,
+                invalid = ?invalid,
+                "LLM returned signals outside the incoming list; \
+                 retrying with corrective feedback"
+            );
+            input.feedback = Some(format!(
+                "Your previous `next_signals` contained entries that are NOT \
+                 in the `Incoming signals into this block` list: {}.\n\
+                 You MUST pick `next_signals` EXACTLY from that numbered \
+                 list — copy the full hierarchical name verbatim. Do not \
+                 invent, rename, truncate, or substitute sub-signals you \
+                 discovered via `read_signal_value`; only names shown in \
+                 the candidate list are valid BFS targets. Re-read the \
+                 candidate list, pick up to top_k = {} valid names ordered \
+                 most-suspicious first, and emit the final JSON.",
+                invalid
+                    .iter()
+                    .map(|s| format!("`{s}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                cli.top_k,
+            ));
         }
-        tracing::info!(
-            step,
-            node_idx,
-            is_root_cause = decision.is_root_cause,
-            next_signals = ?decision.next_signals,
-            "LLM decision: {}",
-            decision.reasoning
-        );
 
         let visited_step = VisitedStep {
             step,
