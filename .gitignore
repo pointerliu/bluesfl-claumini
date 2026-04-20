@@ -2,5 +2,6 @@
 /sv-analyzer
 /res.json
 /.codex
+/.omx
 *.log
 .env
